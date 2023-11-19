@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/hihoak/torrent-cli/services/peers"
 	torrent_file_decoder "github.com/hihoak/torrent-cli/services/torrent-file-decoder"
+	log "github.com/rs/zerolog/log"
 	"net"
 	"time"
 )
@@ -18,36 +19,31 @@ const (
 type Client struct {
 	conn     net.Conn
 	bitfield Bitfield
+	PeerID   string
+
+	Chocked bool
 }
 
-func processHandshake(conn net.Conn, verifyHash [20]byte) error {
-	//if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-	//	return fmt.Errorf("failed to send deadline timeout: %w", err)
-	//}
-	//defer conn.SetDeadline(time.Time{})
-
-	torrentHandShake := TorrentProtocolHandshake{
-		FileVerifyHash: verifyHash,
-		PeerID:         peers.MyPeerID,
+func processHandshake(conn net.Conn, verifyHash [20]byte) (*torrentProtocolHandshake, error) {
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, fmt.Errorf("failed to send deadline timeout: %w", err)
 	}
-	if _, handshakeErr := conn.Write(MarshallHandshake(torrentHandShake)); handshakeErr != nil {
-		return fmt.Errorf("failed to start handshake: %w", handshakeErr)
-	}
+	defer func() {
+		if err := conn.SetDeadline(time.Time{}); err != nil {
+			log.Error().Err(err).Msg("failed to set deadline")
+		}
+	}()
 
-	gotHandshake, unmarshallErr := UnmarshallHandshake(conn)
-	if unmarshallErr != nil {
-		return fmt.Errorf("failed to unmarshall got handshake: %w", unmarshallErr)
+	if handshakeErr := SendHandshake(conn, verifyHash, peers.MyPeerID); handshakeErr != nil {
+		return nil, fmt.Errorf("failed to send handshake: %w", handshakeErr)
 	}
 
-	if torrentHandShake.FileVerifyHash != gotHandshake.FileVerifyHash {
-		return fmt.Errorf("handshake is failed: file hashed are not equal")
+	handshake, handshakeErr := RecvHandshake(conn, verifyHash)
+	if handshakeErr != nil {
+		return nil, fmt.Errorf("failed to recv handshake: %w", handshakeErr)
 	}
 
-	if torrentHandShake.PeerID != gotHandshake.PeerID {
-		return fmt.Errorf("handshake is failed: peer IDs is not equal")
-	}
-
-	return nil
+	return handshake, nil
 }
 
 func getPeersBitfield(conn net.Conn) (Bitfield, error) {
@@ -64,12 +60,14 @@ func getPeersBitfield(conn net.Conn) (Bitfield, error) {
 }
 
 func NewClient(torrentFile *torrent_file_decoder.TorrentFile, peer *peers.Peer) (*Client, error) {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", peer.IP.String(), peer.Port), time.Second*2)
+	fmt.Println("start initializing connect to:", peer.IP.String())
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", peer.IP.String(), peer.Port), 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init connection to peer %v: %w", peer, err)
 	}
 
-	if handshakeErr := processHandshake(conn, torrentFile.VerifyHash); handshakeErr != nil {
+	handshake, handshakeErr := processHandshake(conn, torrentFile.VerifyHash)
+	if handshakeErr != nil {
 		return nil, fmt.Errorf("failed to process handshake: %w", handshakeErr)
 	}
 
@@ -78,10 +76,25 @@ func NewClient(torrentFile *torrent_file_decoder.TorrentFile, peer *peers.Peer) 
 		return nil, fmt.Errorf("failed to retrieve bitfield: %w", bitFieldErr)
 	}
 
+	fmt.Println("successfully established connection to:", peer.IP.String())
 	return &Client{
 		conn:     conn,
 		bitfield: bitField,
+		PeerID:   string(handshake.PeerID[:]),
+		Chocked:  true,
 	}, nil
+}
+
+func (c *Client) Close() error {
+	return c.conn.Close()
+}
+
+func (c *Client) HasPieceToDownload(id int) bool {
+	return c.bitfield.HasPiece(id)
+}
+
+func (c *Client) SetPieceToDownload(id int) {
+	c.bitfield.SetPiece(id)
 }
 
 func (c *Client) SendHave(pieceID int) error {
@@ -106,4 +119,14 @@ func (c *Client) SendInterested() error {
 		return fmt.Errorf("failed to send %q message to client: %w", MsgInterested, err)
 	}
 	return nil
+}
+
+func (c *Client) SendRequest(index, begin, length int) error {
+	message := CreateRequestMessage(index, begin, length)
+	_, err := c.conn.Write(Marshall(message))
+	return err
+}
+
+func (c *Client) ReadMessage() (*Message, error) {
+	return UnmarshallMessage(c.conn)
 }

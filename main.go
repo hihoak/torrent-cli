@@ -1,35 +1,33 @@
 package main
 
 import (
-	"fmt"
-	"github.com/hihoak/torrent-cli/client/torrent"
+	"github.com/hihoak/torrent-cli/services/downloader"
 	"github.com/hihoak/torrent-cli/services/peers"
 	torrent_decoder "github.com/hihoak/torrent-cli/services/torrent-file-decoder"
-	"log"
+	log "github.com/rs/zerolog/log"
 	"os"
+	"time"
 )
 
 func main() {
-	data, _ := os.Open("fifa14.torrent")
+	startOfProgram := time.Now()
+	data, _ := os.Open("RPG_End_of_Aspiration.rar.torrent")
 	file, err := torrent_decoder.Unmarshall(data)
 	if err != nil {
-		log.Fatal("failed to create torrent file:", err)
+		log.Fatal().Err(err).Msg("failed to create torrent file")
 	}
 
-	peers, err := peers.GetPeers(file)
+	torrentPeers, err := peers.GetPeers(file)
 	if err != nil {
-		log.Fatal("failed to get peers: ", err)
+		log.Fatal().Err(err).Msg("failed to get peers")
 	}
 
-	clients := make([]*torrent.Client, 0)
-	for _, peer := range peers {
-		client, handshakeErr := torrent.NewClient(file, peer)
-		if handshakeErr != nil {
-			log.Println("failed to proccess handshale:", handshakeErr)
-			continue
-		}
-		clients = append(clients, client)
+	download := downloader.NewDownloader(file, torrentPeers)
+	if downloadErr := download.Download(); downloadErr != nil {
+		log.Fatal().Err(downloadErr).Msg("failed to download file")
 	}
-
-	fmt.Println(clients)
+	timeOfExecutionSeconds := time.Now().Sub(startOfProgram).Seconds()
+	fileSizeMb := float64(file.Length) / 1024 / 1024
+	averageSpeedMbPerSecond := fileSizeMb / timeOfExecutionSeconds
+	log.Info().Msgf("program executed for %f second. Downloaded %f Mb. Average speed: %f Mb/second", timeOfExecutionSeconds, fileSizeMb, averageSpeedMbPerSecond)
 }

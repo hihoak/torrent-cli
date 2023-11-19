@@ -5,8 +5,8 @@ import (
 	"fmt"
 	torrent_decoder "github.com/hihoak/torrent-cli/services/torrent-file-decoder"
 	"github.com/jackpal/bencode-go"
+	log "github.com/rs/zerolog/log"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -27,7 +27,7 @@ func getID() [20]byte {
 	id := make([]byte, 20)
 	_, err := rand.Read(id[:])
 	if err != nil {
-		log.Fatal("failed to generate ID: ", err)
+		log.Fatal().Err(err).Msg("failed to generate ID")
 	}
 	return [20]byte(id)
 }
@@ -81,7 +81,7 @@ func GetPeers(torrentFile *torrent_decoder.TorrentFile) ([]*Peer, error) {
 		if resp.Body != nil {
 			additionalInfo, readErr := io.ReadAll(resp.Body)
 			if readErr != nil {
-				log.Println("failed to read body of response:", readErr)
+				log.Error().Err(readErr).Msg("failed to read body of response")
 			}
 			responseErr = fmt.Errorf("%w: %s", responseErr, string(additionalInfo))
 		}
@@ -89,7 +89,7 @@ func GetPeers(torrentFile *torrent_decoder.TorrentFile) ([]*Peer, error) {
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			log.Println("failed to close connection: ", closeErr)
+			log.Error().Err(closeErr).Msg("failed to close connection")
 		}
 	}()
 
